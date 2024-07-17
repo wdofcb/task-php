@@ -1,0 +1,134 @@
+pipeline {
+    agent any
+
+    environment {
+        REPO_URL = 'https://github.com/wdofcb/task-php.git'
+        BRANCH = 'master'
+        IMAGE_NAME = 'wdofcbdocker/php-task-app'
+        DOCKER_REGISTRY = 'index.docker.io/v1/'
+        DOCKER_CREDENTIALS_ID = 'wdofcbdocker'
+    }
+    
+       // #1 Initialize the repository
+       stages {
+        stage('Initialize') {
+            steps {
+                script {
+                    
+                    sh 'git init'
+                    sh "git remote add origin ${REPO_URL}"
+                }
+            }
+        }
+
+        // #2 Checkout repository
+        stage('Checkout') {
+            steps {
+                script {
+                    sh "git fetch origin ${BRANCH}"
+                    sh "git checkout -b ${BRANCH} FETCH_HEAD"
+                }
+            }
+        }
+
+        //#3 Scan code quality issues and potential security vulnerabilities. 
+        stage('Static Code Analysis with php_codesnifer') { 
+            steps {
+                script {
+                    sh 'composer update'
+                    sh './vendor/bin/phpcs --standard=PSR12 src/'
+                }
+            }
+        }
+
+        //#4 Install PHP dependencies
+        stage('Install Dependencies') {
+            steps {
+                script {
+                    sh 'composer install --no-dev --no-interaction'
+                }
+            }
+        }
+        
+        //#5 Check for known vulnerabilities in installed dependencies.
+        stage('Check for known vulnerabilities in installed dependencies') {
+            steps {
+                script {
+                    sh 'composer audit'
+                }
+            }
+        }
+
+        //#6 Verify phpunit.xml file exists before running the tests
+        stage('Check PHPUnit Config') {
+            steps {
+                script {
+                    sh 'ls -la phpunit.xml'
+                }
+            }
+        }
+
+        //#7 Run PHPUnit tests
+        stage('Run Tests') {
+            steps {
+                script {
+                    sh 'phpunit --configuration phpunit.xml'
+                }
+            }
+        } 
+        
+        //#8 Build the Docker image
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    def app = docker.build("${IMAGE_NAME}")
+                }
+            }
+        }
+
+        //#9 Scan the docker image with Trivy
+        stage('Trivy Scan') {
+            steps {
+                script {
+                    sh 'trivy --version'
+                    sh 'trivy image --debug --exit-code 1 ${IMAGE_NAME}'
+                }
+            }
+        }
+        
+        //#10 Push the Docker image to the registry
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", "${DOCKER_CREDENTIALS_ID}") {
+                        def app = docker.image("${IMAGE_NAME}")
+                        app.push("${env.BUILD_NUMBER}")
+                    }
+                }
+            }
+        }
+
+        //#11 Deploy using Docker Compose
+        stage('Deploy') {
+            steps {
+                script {
+                    sh 'docker-compose down'
+                    sh 'docker-compose up -d'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline succeeded!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
